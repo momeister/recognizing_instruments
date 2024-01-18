@@ -1,0 +1,474 @@
+import librosa
+import numpy as np
+import sys
+from scipy.signal import find_peaks
+
+
+sys.stdout.reconfigure(encoding='utf-8')
+
+audio_file = "Klaenge/einstimmig-1-mp.mp3"      # Violine
+#audio_file = "Klaenge/einstimmig-2-mp.mp3"     # Trompete
+#audio_file = "Klaenge/einstimmig-klavier.mp3"  # Klavier
+#audio_file = "Klaenge/einstimmig-oboe.mp3"     # Oboe
+#audio_file = "Klaenge\mehrstimmig-2.mp3"       # Violine, Trompete
+#audio_file = "Klaenge\mehrstimmig-3.mp3"       # Violine, Trompete, Oboe
+#audio_file = "Klaenge\mehrstimmig-4.mp3"       # Violine, Trompete, Oboe, Klavier
+
+# Loading the piece of music and converting it into a constant Q-chromagram
+y, sr = librosa.load(audio_file)
+chromagram = librosa.feature.chroma_cqt(y=y, sr=sr)
+
+def get_fundamental_frequency(audio, sample_rate, start_time=0, duration=1):
+    # Extract the audio signal in the specified time range
+    start_sample = int(start_time * sample_rate)
+    end_sample = start_sample + int(duration * sample_rate)
+    audio_segment = audio[start_sample:end_sample]
+
+    # Calculating the FFT (Fast Fourier Transform) for the audio segment
+    fft_result = np.fft.fft(audio_segment)
+    fft_magnitude = np.abs(fft_result)
+
+    # Define frequency range
+    frequency_range = np.fft.fftfreq(len(fft_result), 1.0 / sample_rate)
+
+    # Finding the peak (fundamental frequency) in the frequency spectrum
+    fundamental_frequency_index = np.argmax(fft_magnitude)
+    fundamental_frequency = frequency_range[fundamental_frequency_index]
+
+    # Only positive frequencies and round to 3 decimal places
+    fundamental_frequency = round(abs(fundamental_frequency), 3)
+
+    return fundamental_frequency
+
+def get_half_frequency_intensity(audio_segment, sr, fundamental_frequency):
+    # Half of the fundamental_frequency
+    half_frequency = fundamental_frequency / 2
+
+    # Calculate the FFT of the audio segment
+    D = np.abs(librosa.stft(audio_segment))
+    freqs = librosa.fft_frequencies(sr=sr)
+
+    # Determines the index of the frequency that is closest to half the fundamental_frequency
+    closest_freq_bin = np.argmin(np.abs(freqs - half_frequency))
+
+    # Determines average intensity at this frequency index
+    intensity = np.mean(D[closest_freq_bin])
+
+    return half_frequency, intensity
+
+def instrument_analyze_for_one_instrument(intensity_data):
+    # Count how often each number occurs in the list
+    counts = {i: intensity_data.count(i) for i in set(intensity_data)}
+
+    # Check whether the list predominantly contains 5s, 4s, 3s or 2s
+    if counts.get(5, 0) >= len(intensity_data) / 2:
+        return "Klavier"
+    elif counts.get(4, 0) >= len(intensity_data) / 2:
+        return "Oboe"
+    elif counts.get(3, 0) >= len(intensity_data) / 2:
+        return "Trompete"
+    elif counts.get(2, 0) >= len(intensity_data) / 2:
+        # If there are many 2s, check whether 3s or 4s are also significant
+        if counts.get(3, 0) > 0 or counts.get(4, 0) > 0:
+            if counts.get(4, 0) >= counts.get(3, 0):
+                return "Oboe"
+            else:
+                return "Trompete"
+        return "Violine"
+
+    return "Nicht identifizierbar"
+
+def instrument_analyze_for_multiple_instruments(intensity_data, threshold_percentage=8):
+    instruments = {2: "Violine", 3: "Trompete", 4: "Oboe", 5: "Klavier"}
+    total_elements = len(intensity_data)
+    threshold_count = (threshold_percentage / 100) * total_elements
+
+    # Count how often each relevant number occurs in the list
+    counts = {i: intensity_data.count(i) for i in set(intensity_data) if i in instruments}
+
+    # Filtering instruments that occur less frequently than the threshold value or only once
+    filtered_counts = {num: count for num, count in counts.items() if count >= threshold_count and count > 1}
+
+    if not filtered_counts:  # If no instruments reach the threshold value
+        print("Keine Instrumente erreichen den Schwellenwert oder kommen nur einmal vor.")
+        return None
+
+    max_count = max(filtered_counts.values())
+    probabilities = {instruments[num]: (count / max_count) * 100 for num, count in filtered_counts.items()}
+
+    # Determine the instruments that receive a probability
+    instruments_with_probability = [instrument for instrument, probability in probabilities.items() if probability > 0]
+
+    # Output of probabilities and instruments with probability
+    for instrument, probability in probabilities.items():
+        print(f"{instrument}: {probability:.2f}% wahrscheinlich")
+
+    print("Instrumente mit Wahrscheinlichkeit:", ", ".join(instruments_with_probability))
+
+    return probabilities
+
+    
+def check_other_dominant_frequencies(audio_segment, sr, fundamental_frequency, intensity_threshold=1.00, freq_tolerance=5.0, frequency_to_pitch=None):
+    D = np.abs(librosa.stft(audio_segment))
+    freqs = librosa.fft_frequencies(sr=sr)
+
+    all_potential_hints = []
+
+    # Dominant frequencies in the spectrogram
+    mean_intensity = np.mean(D, axis=1)
+    peaks, _ = find_peaks(mean_intensity, height=intensity_threshold)
+
+    # Filtering the fundamental frequency and its overtones
+    dominant_frequencies = freqs[peaks]
+    dominant_frequencies = [freq for freq in dominant_frequencies if freq > fundamental_frequency * 1.1]
+
+    # Show indications for dominant frequency found
+    for freq in dominant_frequencies:
+        hints = []
+        complete_series = True  # Flag to check whether all harmonics are present
+        is_not_near_the_fundamental_freq = True
+
+        # Adds the fundamental frequency
+        grund_intensity = mean_intensity[np.argmin(np.abs(freqs - freq))]
+        hints.append((freq, grund_intensity))
+
+        # Determining the key if a mapping is available
+        pitch = frequency_to_pitch.get(freq) if frequency_to_pitch else "Unbekannt"
+
+        # Calculating the intensity of half the fundamental frequency
+        half_frequency, half_intensity = get_half_frequency_intensity(audio_segment, sr, freq)
+
+        # Check whether the half frequency has a high intensity and is close to the new fundamental frequency
+        if half_intensity > 0.5 and abs(fundamental_frequency - half_frequency) < freq_tolerance:
+            print(f"Die Hälfte der Frequenz {half_frequency} Hz mit Intensität {half_intensity} ist zu ähnlich zur Grundfrequenz {fundamental_frequency} Hz.")
+            is_not_near_the_fundamental_freq = False
+
+        # Adding overtones
+        if is_not_near_the_fundamental_freq == True:
+            complete_series = True  # Assumption that the series is complete
+            for n in range(2, 21):  # From 2 to 20 for the overtones
+                overtone_freq = freq * n
+                if n <= 15:  # Check only up to the 15th overtone
+                    if overtone_freq > freqs[-1]:  # Checks whether the overtone is outside the analyzed frequency range
+                        complete_series = False
+                        break  # End the loop when the overtone can no longer be found
+
+                if overtone_freq < freqs[-1]:  # Add the overtones up to the 20th if within the range
+                    closest_freq_bin = np.argmin(np.abs(freqs - overtone_freq))
+                    intensity = mean_intensity[closest_freq_bin]
+                    hints.append((overtone_freq, intensity))
+
+        # Only adds frequency and overtones if all overtones are present    
+        if complete_series and len(hints) >= 15 and is_not_near_the_fundamental_freq == True:
+            all_potential_hints.append(hints)
+            print(f"\nZusätzliche Tonhöhen: {pitch}, Grundfrequenz: {freq:.2f} Hz mit Intensität {grund_intensity:.2f}")
+            overtone_number = 1
+            for overtone_freq, intensity in hints[1:]:
+                print(f"Oberton {overtone_number}: {overtone_freq:.2f} Hz mit Intensität {intensity:.2f}")
+                overtone_number += 1
+                
+    return all_potential_hints
+
+def check_fundamental_frequency_intensity(hint_list, tolerance=1e-2):
+    fundamental_intensity = hint_list[0][1]
+    overtone_intensities = [hint[1] for hint in hint_list[1:]]
+
+    more_intense_overtone = any(fundamental_intensity < intensity for intensity in overtone_intensities if intensity > tolerance)
+    complexity = sum(intensity > tolerance for intensity in overtone_intensities)
+    higher_overtone_presence = sum(overtone_intensities[2:5]) > fundamental_intensity
+    balanced_overtone_intensity = all(abs(overtone_intensities[i] - overtone_intensities[i+1]) < tolerance for i in range(len(overtone_intensities) - 1))
+    total_overtone_intensity = sum(overtone_intensities) > fundamental_intensity
+
+    piano_like_properties = fundamental_intensity > max(overtone_intensities) and len([intensity for intensity in overtone_intensities if intensity > tolerance / 2]) > len(overtone_intensities) / 2
+    if more_intense_overtone:
+        return 3
+    elif complexity > len(overtone_intensities) / 2:
+        return 2
+    elif higher_overtone_presence or balanced_overtone_intensity or total_overtone_intensity:
+        return 4
+    elif piano_like_properties:
+        return 5 
+    else:
+        return 1
+    
+def check_fundamental_frequency_intensity4(hint_list, tolerance=1e-2):
+    fundamental_intensity = hint_list[0][1]
+    overtone_intensities = [hint[1] for hint in hint_list[1:]]
+
+    # Check whether the fundamental tone has the highest intensity
+    is_fundamental_highest = fundamental_intensity > max(overtone_intensities)
+
+    # Analysis of the complexity of the overtone series
+    complexity = sum(intensity >= 0.01 for intensity in overtone_intensities)
+
+    # Analysis of the intensity changes in the overtones
+    intensity_increases = sum(round(overtone_intensities[i], 2) > round(overtone_intensities[i - 1], 2) for i in range(1, len(overtone_intensities)))
+    
+    higher_overtone_intensity = sum(intensity > 0.10 for intensity in overtone_intensities[9:15])
+    
+    high_intensity_in_third_fourth_overtone = any(intensity > 1 for intensity in overtone_intensities[2:4])
+
+    points = {"Violine": 0, "Trompete": 0, "Klavier": 0, "Oboe": 0}
+
+    # is_fundamental_highest
+    if is_fundamental_highest:
+        points["Violine"] += 3
+        points["Klavier"] += 3
+        points["Trompete"] += 1
+        points["Oboe"] += 1
+    else:
+        points["Trompete"] += 6
+        points["Oboe"] += 6
+
+    # Complexity
+    if complexity > 13:
+        points["Oboe"] += 3
+    elif complexity > 7:
+        points["Violine"] += 2
+        points["Trompete"] += 2
+        points["Oboe"] += 1
+    else:
+        points["Klavier"] += 3
+
+    # Intensity Increases
+    if intensity_increases > 3:
+        points["Oboe"] += 3
+    elif intensity_increases > 0:
+        points["Violine"] += 2
+        points["Trompete"] += 2
+        points["Oboe"] += 1
+    else:
+        points["Klavier"] += 3
+
+    # Higher Overtone Intensity
+    if higher_overtone_intensity > 0:
+        points["Oboe"] += 5
+    else:
+        points["Violine"] += 1
+        points["Trompete"] += 1
+        points["Klavier"] += 1
+        
+    if high_intensity_in_third_fourth_overtone:
+        points["Trompete"] += 3
+        points["Oboe"] += 3
+
+    # Determination of the most likely instrument
+    most_likely_instrument = max(points, key=points.get)
+
+    # Assignment of numbers to the instruments
+    instrument_ids = {"sonstige": 1, "Violine": 2, "Trompete": 3, "Oboe": 4, "Klavier": 5}
+
+    # Check whether one instrument clearly dominates
+    if points[most_likely_instrument] == max(points.values()):
+        return instrument_ids[most_likely_instrument]
+    else:
+        return 1 
+    
+def check_fundamental_frequency_intensity_with_more_instruments(hint_list, tolerance=1e-2):
+    fundamental_intensity = hint_list[0][1]
+    overtone_intensities = [hint[1] for hint in hint_list[1:]]
+
+    # Check whether the fundamental tone has the highest intensity
+    is_fundamental_highest = fundamental_intensity > max(overtone_intensities)
+
+    # Analysis of the complexity of the overtone series
+    complexity = sum(intensity >= 0.01 for intensity in overtone_intensities)
+
+    # Analysis of intensity changes in the overtones
+    intensity_increases = sum(round(overtone_intensities[i], 2) > round(overtone_intensities[i - 1], 2) for i in range(1, len(overtone_intensities)))
+    
+    # Checks higher harmonics for "stronger" intensity
+    higher_overtone_intensity = sum(intensity > 0.10 for intensity in overtone_intensities[9:15])
+    
+    # Checks harmonics 3 and 4 for high intensities
+    high_intensity_in_third_fourth_overtone = any(intensity > 1 for intensity in overtone_intensities[2:4])
+    
+    # Checks whether more than 3 overtones are recognized
+    has_more_than_three_overtone = all(intensity <= tolerance for intensity in overtone_intensities[3:])
+
+    points = {"Violine": 0, "Trompete": 0, "Klavier": 0, "Oboe": 0}
+
+    if is_fundamental_highest:
+        points["Violine"] += 4
+        points["Klavier"] += 4
+        points["Trompete"] += 1
+        points["Oboe"] += 1
+    else:
+        points["Trompete"] += 5
+        points["Oboe"] += 5
+
+    if complexity > 14:
+        points["Oboe"] += 3
+    elif complexity > 10:
+        points["Violine"] += 3
+        points["Trompete"] += 3
+        points["Oboe"] += 1
+    else:
+        points["Klavier"] += 3
+
+    if intensity_increases > 4:
+        points["Oboe"] += 3
+    elif intensity_increases > 0:
+        points["Violine"] += 2
+        points["Trompete"] += 2
+        points["Oboe"] += 1
+    else:
+        points["Klavier"] += 3
+
+    if higher_overtone_intensity > 2:
+        points["Oboe"] += 5
+    else:
+        points["Violine"] += 2
+        points["Trompete"] += 2
+        points["Klavier"] += 1
+
+    if high_intensity_in_third_fourth_overtone:
+        points["Trompete"] += 3
+        points["Oboe"] += 3
+
+    # Determination of the most likely instrument
+    most_likely_instrument = max(points, key=points.get)
+
+    # Assignment of numbers to the instruments
+    instrument_ids = {"sonstige": 1, "Violine": 2, "Trompete": 3, "Oboe": 4, "Klavier": 5}
+
+    # Check whether one instrument clearly dominates
+    if points[most_likely_instrument] == max(points.values()) and not has_more_than_three_overtone:
+        return instrument_ids[most_likely_instrument]
+    else:
+        return 1  # Other, if no instrument dominates
+
+
+# Points in time at which the pitch changes
+pitch_change = np.where(np.diff(np.argmax(chromagram, axis=0)))[0]
+
+# End time is added as last tone change has no new change
+pitch_change = np.append(pitch_change, len(chromagram.T) - 1)
+
+# Converts frames in seconds
+time_points = librosa.frames_to_time(pitch_change, sr=sr)
+
+# pitch mapping (0=C, 1=C#, etc.)
+pitch_names = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'H']
+
+#Minimum duration for a pitch change (in seconds)
+minimum_duration = 0.05
+
+# Threshold value for the fundamental_frequency (in Hertz)
+fundamental_frequency_threshold_value = 30.0
+
+overtone_intensity_check_list = []
+
+start_time = 0.0
+previous_pitch_index = None  # Variable for tracking the previous pitch
+
+freq_tolerance = 5.0 # Tolerance in Hz, frequencies within this tolerance are considered equal
+
+overtone_freq_list = []
+intensity_list = []
+potential_hints = []
+previous_fundamental_frequency = None 
+
+for i in range(len(time_points)):
+    end_time = time_points[i]
+
+    if end_time - start_time >= minimum_duration:
+        pitch_index = np.argmax(chromagram[:, pitch_change[i]])
+
+        if pitch_index != previous_pitch_index:
+            pitch = pitch_names[pitch_index]
+            fundamental_frequency = get_fundamental_frequency(y, sr, start_time, 0.3)
+            
+            # Skip the current frequency if it is similar to the previous one
+            if previous_fundamental_frequency is not None and abs(previous_fundamental_frequency - fundamental_frequency) <= freq_tolerance:
+                continue
+            
+            audio_segment = y[int(start_time*sr):int(end_time*sr)]
+            
+            # Calculate the spectrogram D for the current audio segment
+            D = np.abs(librosa.stft(audio_segment))
+
+            current_fundamental_frequency = fundamental_frequency
+            finding_lower_fundamental_frequency = current_fundamental_frequency
+
+            while finding_lower_fundamental_frequency > 30:
+                # Determines the half fundamental_frequency and its intensity
+                half_frequency, half_intensity = get_half_frequency_intensity(audio_segment, sr, finding_lower_fundamental_frequency)
+
+                # Checks whether the intensity of half the fundamental_frequency is above the threshold value
+                if half_intensity > 0.5:
+                    current_fundamental_frequency = half_frequency
+
+                # Halved frequency to investigate whether possible high intensities can be found in lower ranges
+                finding_lower_fundamental_frequency = finding_lower_fundamental_frequency / 2
+                    
+                
+            # Setting the final fundamental frequency
+            fundamental_frequency = current_fundamental_frequency
+
+            if fundamental_frequency >= fundamental_frequency_threshold_value and fundamental_frequency <= 4000:
+                print(f"\nTonhöhe {pitch} (Grundfrequenz: {fundamental_frequency} Hz) von {start_time:.2f}s bis {end_time:.2f}s")
+                
+                keynote_intensity = None
+                intensity_list_for_note = []
+
+                # Show the first 15 overtones and their intensity based on the new fundamental frequency
+                for n in range(1, 21):  # Overtone number
+                    overtone_freq = fundamental_frequency * n
+                    closest_freq_bin = np.argmin(np.abs(librosa.fft_frequencies(sr=sr) - overtone_freq))
+                    intensity = np.mean(D[closest_freq_bin])
+                    
+                    if n == 1 :
+                        print(f"Grundfrequenz: {overtone_freq:.2f} Hz, Intensität: {intensity:.2f}")
+                        keynote_intensity = intensity
+                    else:
+                        print(f"Oberton {n-1}: {overtone_freq:.2f} Hz, Intensität: {intensity:.2f}")
+                    overtone_freq_list.append(overtone_freq)
+                    intensity_list_for_note.append(intensity)
+                    
+                intensity_list.append(intensity_list_for_note)
+                
+                potential_hints.append(check_other_dominant_frequencies(audio_segment, sr, fundamental_frequency))
+                potential_hints = list(filter(None, potential_hints))
+                
+            previous_fundamental_frequency = fundamental_frequency  # Update the previous fundamental frequency
+
+        previous_pitch_index = pitch_index
+    start_time = end_time
+
+# Divides overtone_freq_list into sublists of length 20
+sublists_overtone_freq = [overtone_freq_list[i:i + 20] for i in range(0, len(overtone_freq_list), 20)]
+
+# Ensure that sublists_overtone_freq and intensity_list are the same length
+assert len(sublists_overtone_freq) == len(intensity_list), "Die Anzahl der Unterlisten stimmt nicht überein"
+
+# Combines frequencies with intensities to form tuples
+freq_and_intensity = [
+    list(zip(freq_sublist, intensity_sublist))
+    for freq_sublist, intensity_sublist in zip(sublists_overtone_freq, intensity_list)
+]
+
+if not potential_hints:
+    for seperate_freq_and_intensity in freq_and_intensity: 
+        overtone_intensity_check_list.append(check_fundamental_frequency_intensity4(seperate_freq_and_intensity))
+
+print("\nAlle nicht der Obertonreihe entsprechenden Frequenzen:")
+
+more_than_one_instrument = False
+
+if potential_hints:
+    for seperate_freq_and_intensity in freq_and_intensity: 
+        overtone_intensity_check_list.append(check_fundamental_frequency_intensity_with_more_instruments(seperate_freq_and_intensity))
+    for hint_list in potential_hints:
+        for hint_list_2 in hint_list:
+            overtone_intensity_check_list.append(check_fundamental_frequency_intensity_with_more_instruments(hint_list_2))
+            more_than_one_instrument = True
+
+print(overtone_intensity_check_list)
+            
+# Output for one instrument
+if not more_than_one_instrument:
+    instrument = instrument_analyze_for_one_instrument(overtone_intensity_check_list)
+    print(f"Das Instrument ist wahrscheinlich eine {instrument}.")
+else:
+    instrument_analyze_for_multiple_instruments(overtone_intensity_check_list)    

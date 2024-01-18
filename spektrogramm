@@ -1,0 +1,59 @@
+import librosa
+import matplotlib.pyplot as plt
+import numpy as np
+
+#wav_file_path = 'testklavier.mp3'
+#wav_file_path = 'testgitarre.mp3'
+#wav_file_path = 'random.mp3'
+#wav_file_path = 'random2.mp3'
+#wav_file_path = 'random3.mp3'
+#wav_file_path = 'langeWAV.wav'
+
+#wav_file_path = 'Klänge\einstimmig-1.wav'
+#wav_file_path = "Klänge\einstimmig-2.wav"
+#wav_file_path = "Klänge\einstimmig-1-mp.mp3"
+#wav_file_path = "Klänge\einstimmig-2-mp.mp3"
+#wav_file_path = "Klänge\mehrstimmig-2.mp3"
+wav_file_path = "Klänge\mehrstimmig-3.mp3"
+
+# Wav-Datei einlesen
+audio_data, sr = librosa.load(wav_file_path)
+
+# Berechnen der Short-Time Fourier Transform (STFT) mit einer Auflösung von 256 Frequenzbändern
+stft_data = librosa.stft(audio_data, n_fft=300)
+
+# Analysieren der Obertonreihe
+frequencies = librosa.fft_frequencies(sr=sr)[:len(stft_data[0])]  # Frequenzen für ein Zeitfenster
+magnitudes = librosa.amplitude_to_db(abs(stft_data))
+
+# Berechnen der Differenzen zwischen den Frequenzen
+differences = np.diff(frequencies)
+
+# Vergleichen der Differenzen mit den harmonischen Vielfachen der Grundfrequenz
+harmonic_multiples = np.arange(2, frequencies[-1], 2)
+harmonic_multiples = harmonic_multiples[:len(differences)]
+
+
+print(f"Differences: {differences}")
+print(f"Differences länge : {len(differences)}")
+print(f'Höchste Frequenz: {frequencies[-1]}')
+print(f'Harmonische Vielfache: {len(harmonic_multiples)}')
+
+
+print(harmonic_multiples)
+
+# Toleranzschwelle für die Überprüfung der Harmonizität festlegen
+tolerance_threshold = 5  # Sie können den Schwellenwert anpassen
+
+# Prüfen, ob die Differenzen innerhalb der Toleranzschwelle der harmonischen Vielfachen liegen
+is_harmonic = np.all(np.abs(differences - harmonic_multiples) <= tolerance_threshold)
+
+# Ausgabe des Ergebnisses
+print(is_harmonic)
+
+# Erstellen eines Spektrogramms
+plt.figure(figsize=(12, 4))
+plt.imshow(magnitudes, aspect='auto', origin='lower', cmap='magma')
+plt.xlabel('Zeit (s)')
+plt.ylabel('Frequenz (Hz)')
+plt.show()
