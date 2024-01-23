@@ -11,3 +11,12 @@ To properly use the Instrument Recognition program, follow these steps to select
    - Then, remove the comment sign `#` from in front of the new `audio_file` variable you wish to use.
 
 Ensure that only one `audio_file` variable is active at a time for the program to function correctly.
+
+## Required Python Libraries
+
+Before running the Instrument Recognition program, make sure to install the following Python libraries using the following `pip` commands:
+
+```bash
+pip install librosa
+pip install numpy
+pip install scipy
